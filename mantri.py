@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 """
+-------------------------------------------------------------------------
+THIS CODE IS NO LONGER IN USE AND TRIKAL HAS BUILT-IN REMOTE CONTROL NOW.
+-------------------------------------------------------------------------
+
 Mantri - The Remote Control for the Trikal Trading Bot.
 
 This script runs continuously, listening for commands from a specific
