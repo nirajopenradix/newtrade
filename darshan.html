@@ -1,0 +1,333 @@
+<!-- START OF FILE darshan.html (Final Version - Marker and Tooltip Fix) -->
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <link rel="icon" type="image/png" href="https://upload.wikimedia.org/wikipedia/commons/thumb/b/b7/Om_symbol.svg/500px-Om_symbol.svg.png">
+    <meta charset="UTF-8">
+    <title>Trikal Darshan - Day Viewer</title>
+    <style>
+        body,
+        html {
+            font-family: sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #1f1f1f;
+            color: #eee;
+        }
+
+        .controls {
+            padding: 10px;
+            border-bottom: 1px solid #444;
+            text-align: center;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 20px;
+        }
+
+        button,
+        input {
+            font-size: 16px;
+            padding: 10px 15px;
+            cursor: pointer;
+            border: 1px solid #555;
+            background-color: #333;
+            color: #eee;
+            border-radius: 4px;
+        }
+
+        label {
+            font-size: 16px;
+        }
+
+        #chart-container {
+            width: 100%;
+            height: 90vh;
+        }
+
+        #status {
+            padding: 10px;
+            font-style: italic;
+            color: #aaa;
+            text-align: center;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="controls">
+        <button id="dir-picker-btn">Select Trikal Project Directory</button>
+        <div>
+            <label for="instance-input">Instance (optional):</label>
+            <input type="text" id="instance-input" placeholder="e.g., niraj, cnxban">
+        </div>
+        <div>
+            <label for="date-selector">Go to Date:</label>
+            <input type="date" id="date-selector" disabled>
+        </div>
+    </div>
+
+    <div id="status">Please select the directory containing your CSV files.</div>
+
+    <div id="chart-container"></div>
+
+    <script src="./echarts.min.js"></script>
+    <script src="./papaparse.min.js"></script>
+
+    <script>
+        let myChart = null;
+        let allChartData = [];
+        let allTradesData = [];
+        let directoryHandle = null;
+        let currentInstanceName = '';
+        let refreshIntervalId = null;
+
+        const dirPickerBtn = document.getElementById('dir-picker-btn');
+        const dateSelector = document.getElementById('date-selector');
+        const instanceInput = document.getElementById('instance-input');
+        const chartDom = document.getElementById('chart-container');
+        const statusDiv = document.getElementById('status');
+
+        dirPickerBtn.addEventListener('click', async () => {
+            try {
+                directoryHandle = await window.showDirectoryPicker({ id: 'trikal-data-folder' });
+                currentInstanceName = instanceInput.value.trim();
+                await loadDataFromDirectory();
+                if (refreshIntervalId) clearInterval(refreshIntervalId);
+                refreshIntervalId = setInterval(autoRefreshData, 1 * 60 * 1000);
+            } catch (error) {
+                if (error.name !== 'AbortError') { statusDiv.textContent = `Error: ${error.message}`; statusDiv.style.color = 'red'; }
+            }
+        });
+
+        async function autoRefreshData() {
+            if (!directoryHandle) return;
+            statusDiv.textContent = `Auto-refreshing data at ${new Date().toLocaleTimeString()}...`;
+            await loadDataFromDirectory();
+        }
+
+        async function loadDataFromDirectory() {
+            if (!directoryHandle) return;
+            const targetChartFile = currentInstanceName ? `live_chart_data_${currentInstanceName}.csv` : 'live_chart_data.csv';
+            const targetTradesFile = currentInstanceName ? `trades_summary_${currentInstanceName}.csv` : 'trades_summary.csv';
+            let chartFileHandle = null, tradesFileHandle = null;
+
+            for await (const entry of directoryHandle.values()) {
+                if (entry.kind === 'file') {
+                    if (entry.name === targetChartFile) chartFileHandle = entry;
+                    else if (entry.name === targetTradesFile) tradesFileHandle = entry;
+                }
+                if (chartFileHandle && tradesFileHandle) break;
+            }
+
+            if (!chartFileHandle) { statusDiv.textContent = `Error: Could not find "${targetChartFile}".`; return; }
+
+            const chartText = await (await chartFileHandle.getFile()).text();
+            allChartData = Papa.parse(chartText, { header: true, dynamicTyping: true }).data.filter(d => d && d.datetime && typeof d.open === 'number');
+
+            if (tradesFileHandle) {
+                const tradesText = await (await tradesFileHandle.getFile()).text();
+                allTradesData = Papa.parse(tradesText, { header: true, dynamicTyping: true, skipEmptyLines: true }).data;
+            } else { allTradesData = []; }
+
+            dateSelector.disabled = false;
+            const selectedDate = dateSelector.value || (allChartData.length > 0 ? allChartData[allChartData.length - 1].datetime.split(' ')[0] : '');
+            if (selectedDate) {
+                dateSelector.value = selectedDate;
+                renderDayChart(selectedDate);
+            } else { statusDiv.textContent = `Loaded ${allChartData.length} data points. Please select a date.`; }
+        }
+
+        dateSelector.addEventListener('change', (event) => {
+            renderDayChart(event.target.value);
+        });
+
+        function renderDayChart(selectedDate) {
+            if (!selectedDate || allChartData.length === 0) return;
+
+            const dayChartData = allChartData.filter(d => d.datetime.startsWith(selectedDate));
+            const dayTradesData = allTradesData.filter(t => t && t.TradeDate && String(t.TradeDate).startsWith(selectedDate));
+
+            if (myChart) myChart.dispose();
+            if (dayChartData.length === 0) { statusDiv.textContent = `No data for ${selectedDate}.`; return; }
+
+            statusDiv.textContent = `Displaying trading day for ${selectedDate}. Found ${dayTradesData.length} trades. Last updated: ${new Date().toLocaleTimeString()}`;
+            myChart = echarts.init(chartDom, 'dark');
+
+            const candlestickData = dayChartData.map(item => [new Date(item.datetime).getTime(), item.open, item.close, item.low, item.high]);
+            const volumeData = dayChartData.map(item => [new Date(item.datetime).getTime(), Math.round(item.volume)]);
+            const ema20Data = dayChartData.map(item => [new Date(item.datetime).getTime(), item.EMA_20]);
+            const ema50Data = dayChartData.map(item => [new Date(item.datetime).getTime(), item.EMA_50]);
+
+            const markers = [];
+            // --- THIS IS THE DEFINITIVE FIX FOR MARKER CREATION ---
+            if (dayTradesData) {
+                dayTradesData.forEach(t => {
+                    if (!t || !t.TradeDate || !t.Contract) return;
+                    const contractName = t.Contract.toUpperCase();
+                    let optType = '';
+                    if (contractName.includes('C')) { optType = 'C'; }
+                    else if (contractName.includes('P')) { optType = 'P'; }
+
+                    const processTrade = (timeStr, type, price, reason = '') => {
+                        if (!timeStr) return;
+                        const ts = new Date(`${t.TradeDate} ${timeStr}`).getTime();
+                        // Find the index in our new timestamp-based data
+                        const idx = candlestickData.findIndex(d => d[0] >= ts);
+
+                        if (idx !== -1) {
+                            const candle = candlestickData[idx];
+                            const candleTimestamp = candle[0];
+                            const lowPrice = candle[3];
+                            const highPrice = candle[4];
+                            const markerText = type.charAt(0) + optType;
+
+                            markers.push({
+                                name: type,
+                                coord: [candleTimestamp, type === 'Buy' ? lowPrice : highPrice],
+                                value: markerText,
+                                itemStyle: { color: type === 'Buy' ? '#03A9F4' : '#ff4d4f' },
+                                label: { position: type === 'Buy' ? 'bottom' : 'top', distance: 10, fontSize: 14, fontWeight: 'bold' },
+                                // Store extra info for the tooltip
+                                tradeInfo: { type, price, reason }
+                            });
+                        }
+                    };
+                    processTrade(t.EntryTime, 'Buy', t.EntryPrice);
+                    processTrade(t.ExitTime, 'Sell', t.ExitPrice, t.ExitReason);
+                });
+            }
+            // --- END OF FIX ---
+
+            const option = {
+                backgroundColor: '#1f1f1f',
+                tooltip: {
+                    trigger: 'axis',
+                    axisPointer: { type: 'cross' },
+                    // --- THIS IS THE FIX FOR THE TOOLTIP ---
+                    formatter: function (params) {
+                        if (!params || params.length === 0) return '';
+                        const timestamp = parseInt(params[0].name);
+                        let res = new Date(timestamp).toLocaleString() + '<br/>';
+
+                        // Group all parameters by their series name to handle multiple markers at the same time
+                        const seriesMap = {};
+                        params.forEach(p => {
+                            if (!seriesMap[p.seriesName]) seriesMap[p.seriesName] = [];
+                            seriesMap[p.seriesName].push(p);
+                        });
+
+                        // Display trade info from MarkPoints first
+                        if (seriesMap['Candles']) {
+                            seriesMap['Candles'].forEach(p => {
+                                if (p.componentSubType === 'markPoint' && p.data.tradeInfo) {
+                                    const info = p.data.tradeInfo;
+                                    const color = info.type === 'Buy' ? '#03A9F4' : '#ff4d4f';
+                                    let infoText = `${info.type} at ${info.price}`;
+                                    if (info.reason) infoText += ` (${info.reason})`;
+                                    res += `<span style="color:${color};">● ${infoText}</span><br/>`;
+                                }
+                            });
+                        }
+
+                        // Then display the regular series data
+                        params.forEach(param => {
+                            if (!param.seriesName || param.componentSubType === 'markPoint') return;
+                            const value = param.value;
+                            let formattedValue = '';
+                            if (param.seriesType === 'candlestick') {
+                                formattedValue = `O:${value[1].toFixed(2)} C:${value[2].toFixed(2)} L:${value[3].toFixed(2)} H:${value[4].toFixed(2)}`;
+                            } else if (typeof value[1] === 'number') {
+                                formattedValue = value[1].toFixed(2);
+                            } else { return; }
+                            res += `${param.marker} ${param.seriesName}: ${formattedValue}<br/>`;
+                        });
+                        return res;
+                    }
+                },
+                legend: { data: ['Candles', 'EMA 20', 'EMA 50'], top: 10, textStyle: { color: '#ccc' } },
+                axisPointer: { link: { xAxisIndex: 'all' } },
+                grid: [
+                    { left: '5%', right: '2%', height: '65%', bottom: '25%' },
+                    { left: '5%', right: '2%', height: '15%', bottom: '8%' }
+                ],
+                xAxis: [
+                    {
+                        type: 'time',
+                        scale: true,
+                        axisLine: { onZero: false },
+                        // ✅ Match 15-min vertical gridlines with volume chart
+                        minInterval: 15 * 60 * 1000,
+                        splitNumber: 24,
+                        // ✅ Show vertical gridlines for candles
+                        splitLine: {
+                            show: true,
+                            lineStyle: {
+                                color: 'rgba(255,255,255,0.1)',
+                                type: 'dashed',
+                                width: 1
+                            }
+                        },
+                        axisLabel: { show: false },
+                        min: new Date(`${selectedDate}T09:15:00`).getTime(),
+                        max: new Date(`${selectedDate}T15:30:00`).getTime()
+                    },
+                    {
+                        type: 'time',
+                        gridIndex: 1,
+                        scale: true,
+                        axisLine: { onZero: false },
+                        axisTick: { show: false },
+                        splitLine: { show: false },
+                        min: new Date(`${selectedDate}T09:15:00`).getTime(),
+                        max: new Date(`${selectedDate}T15:30:00`).getTime(),
+
+                        // 👇 this part controls your time labels
+                        axisLabel: {
+                            show: true,
+                            color: '#ccc',
+                            fontSize: 11,
+                            formatter: (value) => {
+                                const d = new Date(value);
+                                const h = d.getHours().toString().padStart(2, '0');
+                                const m = d.getMinutes().toString().padStart(2, '0');
+                                return `${h}:${m}`;
+                            }
+                        },
+                        minInterval: 15 * 60 * 1000,   // 👈 ensures tick marks every 15 minutes
+                        splitNumber: 24,               // 👈 optional — roughly controls how many labels show
+                    }
+                ],
+                yAxis: [
+                    { scale: true, splitArea: { show: true, areaStyle: { color: ['rgba(250,250,250,0.05)', 'rgba(200,200,200,0.05)'] } } },
+                    { scale: true, gridIndex: 1, splitNumber: 2, axisLabel: { show: false }, axisLine: { show: false }, axisTick: { show: false }, splitLine: { show: false } }
+                ],
+                series: [
+                    {
+                        name: 'Candles', type: 'candlestick', data: candlestickData,
+                        barWidth: 10,        // 👈 sets a fixed width in pixels
+                        barMinWidth: 2,     // 👈 prevents candles from collapsing when too many
+                        barMaxWidth: 10,    // 👈 caps the size when too few
+                        itemStyle: { color: '#26a69a', color0: '#ef5350', borderColor: '#26a69a', borderColor0: '#ef5350' },
+                        markPoint: { data: markers, symbol: 'circle', symbolSize: 1, label: { color: '#fff' } }
+                    },
+                    { name: 'EMA 20', type: 'line', data: ema20Data, smooth: true, showSymbol: false, lineStyle: { opacity: 0.9, color: '#f39c12', width: 2 } },
+                    { name: 'EMA 50', type: 'line', data: ema50Data, smooth: true, showSymbol: false, lineStyle: { opacity: 0.9, color: '#2ecc71', width: 2 } },
+                    {
+                        name: 'Volume', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: volumeData,
+                        barWidth: 10,        // 👈 sets a fixed width in pixels
+                        barMinWidth: 2,     // 👈 prevents candles from collapsing when too many
+                        barMaxWidth: 10,    // 👈 caps the size when too few
+                        itemStyle: { color: (params) => (candlestickData[params.dataIndex][2] > candlestickData[params.dataIndex][1] ? '#26a69a' : '#ef5350') }
+                    }
+                ]
+            };
+
+            myChart.setOption(option, true);
+            window.onresize = function () { myChart.resize(); };
+        }
+    </script>
+</body>
+
+</html>

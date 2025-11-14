@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NSE Order Announcements Report</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            margin: 2em;
+            background-color: #f4f6f9;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: auto;
+            background: white;
+            padding: 2em;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+
+        h2 {
+            text-align: center;
+            color: #333;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+        }
+
+        th,
+        td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }
+
+        th {
+            background-color: #0056b3;
+            color: white;
+            cursor: pointer;
+            position: relative;
+        }
+
+        th::after {
+            content: ' \2195';
+            opacity: 0.3;
+        }
+
+        tr:nth-child(even) {
+            background-color: #f8f9fa;
+        }
+
+        tr:hover {
+            background-color: #e9ecef;
+        }
+
+        a {
+            color: #0056b3;
+            text-decoration: none;
+            font-weight: bold;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
+        #searchInput {
+            width: 100%;
+            font-size: 16px;
+            padding: 12px;
+            border: 1px solid #ccc;
+            margin-bottom: 20px;
+            box-sizing: border-box;
+            border-radius: 4px;
+        }
+
+        #reportInfo {
+            text-align: center;
+            margin-bottom: 20px;
+            color: #555;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container">
+        <h2>NSE New Order Announcements Report</h2>
+        <div id="reportInfo">Loading data...</div>
+        <input type="text" id="searchInput" onkeyup="filterTable()" placeholder="Search for symbols or keywords...">
+
+        <table id="ordersTable">
+            <thead>
+                <tr>
+                    <th onclick="sortTable(0)">Date</th>
+                    <th onclick="sortTable(1)">Symbol</th>
+                    <th onclick="sortTable(2)">Description</th>
+                    <th onclick="sortTable(3)">Order Value Snippet</th>
+                    <th>Link</th>
+                </tr>
+            </thead>
+            <tbody id="tableBody">
+                <!-- Data will be populated by JavaScript -->
+            </tbody>
+        </table>
+    </div>
+
+    <!-- This line is the magic. It loads your data file. -->
+    <script src="nse_orders_database.js"></script>
+
+    <script>
+        let currentSortColumn = 0;
+        let isAscending = false;
+
+        function buildTable(data) {
+            const tableBody = document.getElementById('tableBody');
+            const reportInfo = document.getElementById('reportInfo');
+
+            if (!data || data.length === 0) {
+                tableBody.innerHTML = '<tr><td colspan="5" style="text-align:center;">No data found. Run the Python script to generate the database.</td></tr>';
+                reportInfo.innerText = 'Last updated: Never';
+                return;
+            }
+
+            tableBody.innerHTML = ''; // Clear existing table
+            data.forEach(item => {
+                let row = `<tr>
+                            <td>${item.date}</td>
+                            <td>${item.symbol}</td>
+                            <td>${item.description}</td>
+                            <td>${item.order_value}</td>
+                            <td><a href="${item.link}" target="_blank">View PDF</a></td>
+                           </tr>`;
+                tableBody.innerHTML += row;
+            });
+            reportInfo.innerText = `Displaying ${data.length} records. Last updated: ${new Date().toLocaleString()}`;
+        }
+
+        function filterTable() {
+            const input = document.getElementById('searchInput');
+            const filter = input.value.toUpperCase();
+            const filteredData = ordersData.filter(item => {
+                return Object.values(item).some(val =>
+                    String(val).toUpperCase().includes(filter)
+                );
+            });
+            buildTable(filteredData);
+        }
+
+        function sortTable(columnIndex) {
+            isAscending = (currentSortColumn === columnIndex) ? !isAscending : true;
+            currentSortColumn = columnIndex;
+
+            ordersData.sort((a, b) => {
+                let valA = Object.values(a)[columnIndex];
+                let valB = Object.values(b)[columnIndex];
+
+                if (valA < valB) {
+                    return isAscending ? -1 : 1;
+                }
+                if (valA > valB) {
+                    return isAscending ? 1 : -1;
+                }
+                return 0;
+            });
+            buildTable(ordersData);
+        }
+
+        // Initial table build on page load
+        if (typeof ordersData !== 'undefined') {
+            // Sort by date descending by default
+            ordersData.sort((a, b) => b.date.localeCompare(a.date));
+            buildTable(ordersData);
+        } else {
+            buildTable([]);
+        }
+    </script>
+
+</body>
+
+</html>
