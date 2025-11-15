@@ -396,52 +396,31 @@ class TrikalEngine:
 
         latest_5m_candle = self.df_fut_history.iloc[-1]
         
-        # The simulation must start from the LATER of two times:
-        # 1. The beginning of the current 5-minute data block.
-        # 2. The actual entry time of the trade.
-        start_of_simulation = max(options_df.index[0], self.active_trade.entry_time)
-        
-        # Find the first available index location that is at or after our desired start time.
-        start_loc = options_df.index.searchsorted(start_of_simulation, side='left')
-        
-        # If our desired start is after all available data, there's nothing to simulate.
-        if start_loc >= len(options_df.index):
+        # We only iterate over ticks where a trade actually occurred.
+        valid_ticks_df = options_df[options_df['volume'] > 0].copy()
+        if valid_ticks_df.empty:
+            if self.active_trade:
+                self.active_trade.last_known_price = options_df.iloc[-1]['close']
             return
-            
-        # This is our guaranteed-to-be-valid starting timestamp for the loop.
-        current_check_time = options_df.index[start_loc]
-        end_of_period = options_df.index[-1]
-        
-        # The line `start_of_period = options_df.index[0]` has been removed as it was redundant.
-        
-        while current_check_time <= end_of_period:
-            if not self.active_trade:
-                break
 
-            next_check_time = current_check_time + timedelta(seconds=30)
-            
-            ticks_in_window = options_df.loc[current_check_time:next_check_time]
+        # Counter to trigger bot-side checks every 30 valid ticks.
+        bot_check_counter = 0
 
-            if ticks_in_window.empty:
-                current_check_time = next_check_time
+        # The main loop iterates through EVERY valid tick.
+        for tick in valid_ticks_df.itertuples(index=True, name='Tick'):
+            opt_timestamp = tick.Index
+            trade = self.active_trade
+            
+            if opt_timestamp <= trade.entry_time:
                 continue
 
-            valid_ticks_in_window = ticks_in_window[ticks_in_window['volume'] > 0]
-            
-            last_valid_tick = None
-            if not valid_ticks_in_window.empty:
-                last_valid_tick = valid_ticks_in_window.iloc[-1]
+            # --- PRIORITY 1: BOT-SIDE DECISIONS (CHECKED EVERY 30 TICKS) ---
+            bot_check_counter += 1
+            if bot_check_counter >= 30:
+                bot_check_counter = 0 # Reset the counter
+                current_ltp = tick.close
 
-            if last_valid_tick is not None:
-                current_ltp = last_valid_tick.close
-                opt_timestamp = last_valid_tick.name
-                
-                trade = self.active_trade
-                trade.highest_ltp = max(trade.highest_ltp, current_ltp)
-                trade.lowest_ltp = min(trade.lowest_ltp, current_ltp)
-                
-                # --- The entire block of exit logic checks remains here, unchanged ---
-                # Priority 1: Ride the Winner
+                # A. Check for "Ride the Winner" activation
                 use_winner_mode = self.strategy.config.get("USE_RIDE_WINNER_MODE", False)
                 if use_winner_mode and not trade.is_winner_mode_active:
                     trigger_pct = self.strategy.config.get("RIDE_WINNER_TRIGGER_PCT")
@@ -456,20 +435,7 @@ class TrikalEngine:
                                 trade.is_winner_mode_active = True
                                 print(f"   └── [{opt_timestamp.strftime('%H:%M:%S')}] RIDE WINNER MODE ARMED! New TP: {trade.target_price:.2f}, New SL: {trade.stoploss_price:.2f}")
 
-                # Priority 2: SL/TP Hits
-                if current_ltp <= trade.stoploss_price:
-                    exit_reason = "SL Hit"
-                    if trade.is_winner_mode_active: exit_reason = "Winner Mode SL"
-                    handle_exit_logic(trade, exit_reason, current_ltp, opt_timestamp, opt_timestamp.strftime('%H:%M:%S'))
-                    self.active_trade = None
-                    continue
-
-                if current_ltp >= trade.target_price:
-                    handle_exit_logic(trade, "Target Hit", trade.target_price, opt_timestamp, opt_timestamp.strftime('%H:%M:%S'))
-                    self.active_trade = None
-                    continue
-                    
-                # Priority 3: Asymmetric Momentum Exits
+                # B. Check for Asymmetric Momentum Exits (Original "Impatient" Logic)
                 is_in_profit = current_ltp > trade.entry_price
                 exit_reason = None
 
@@ -494,13 +460,27 @@ class TrikalEngine:
                     print(f"   └── ⚠️ [{opt_timestamp.strftime('%H:%M:%S')}] ASYMMETRIC MOMENTUM EXIT! Reason: {exit_reason}")
                     handle_exit_logic(trade, exit_reason, current_ltp, opt_timestamp, opt_timestamp.strftime('%H:%M:%S'))
                     self.active_trade = None
-                    continue
+                    return
 
-            current_check_time = next_check_time
-            
+            # --- PRIORITY 2: BROKER-SIDE GTT SIMULATION (CHECKED ON EVERY TICK) ---
+            if tick.low <= trade.stoploss_price:
+                exit_reason = "SL Hit"
+                if trade.is_winner_mode_active: exit_reason = "Winner Mode SL"
+                handle_exit_logic(trade, exit_reason, trade.stoploss_price, opt_timestamp, opt_timestamp.strftime('%H:%M:%S'))
+                self.active_trade = None
+                return
+
+            if tick.high >= trade.target_price:
+                handle_exit_logic(trade, "Target Hit", trade.target_price, opt_timestamp, opt_timestamp.strftime('%H:%M:%S'))
+                self.active_trade = None
+                return
+
+            # Update High/Low tracking
+            trade.highest_ltp = max(trade.highest_ltp, tick.high)
+            trade.lowest_ltp = min(trade.lowest_ltp, tick.low)
+        
         if self.active_trade:
-            last_price_in_candle = options_df[options_df['volume'] > 0].iloc[-1].close if not options_df[options_df['volume'] > 0].empty else self.active_trade.last_known_price
-            self.active_trade.last_known_price = last_price_in_candle
+            self.active_trade.last_known_price = valid_ticks_df.iloc[-1].close        
             
     def _cleanup_after_exit(self):
         self.active_trade = None
